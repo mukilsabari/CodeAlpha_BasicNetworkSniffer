@@ -1,122 +1,91 @@
-# (Keep all imports, parse_args, analyze_pcap, and stop function definitions as is)
+import argparse
+import sys
+from scapy.all import sniff, IP, TCP, UDP, Raw
+from scapy.utils import hexdump
 
-# -------------------------
-# Main sniffer logic - REFACTORED
-# -------------------------
+# Function to parse command-line arguments
+def parse_args():
+    p = argparse.ArgumentParser(description="Basic Network Sniffer using Scapy")
+    p.add_argument("-i", "--iface", required=True, 
+                   help="Network interface to sniff on (e.g., eth0)")
+    p.add_argument("-f", "--filter", default="", 
+                   help="BPF filter string (e.g., 'tcp port 80')")
+    p.add_argument("-c", "--count", type=int, default=0, 
+                   help="Packet count (0 = unlimited)")
+    return p.parse_args()
+
+# Function to analyze and display captured packets
+def packet_callback(packet):
+    """Analyzes a packet and displays IPs, ports, flags, and payload."""
+    
+    if IP in packet:
+        ip_src = packet[IP].src
+        ip_dst = packet[IP].dst
+        protocol = packet[IP].proto
+        
+        print("\n--- New Packet Captured ---")
+        print(f"Source IP: {ip_src} | Destination IP: {ip_dst}")
+        
+        # Determine the transport layer
+        if TCP in packet:
+            transport_layer = "TCP"
+            src_port = packet[TCP].sport
+            dst_port = packet[TCP].dport
+            tcp_flags = packet[TCP].flags
+            
+            print(f"Protocol: {transport_layer} | Port: {src_port} -> {dst_port}")
+            print(f"TCP Flags: {str(tcp_flags)}")
+            
+            # Payload Analysis
+            if Raw in packet:
+                payload = packet[Raw].load
+                payload_len = len(payload)
+                
+                print(f"[Payload Analysis] Size: {payload_len} bytes")
+                
+                # Attempt to decode as text, otherwise use hex dump
+                try:
+                    text = payload.decode("utf-8", errors="ignore")
+                    print("  Content Peek (Text):")
+                    print(text[:100].strip())
+                except Exception:
+                    print("  Content Peek (Hex Dump):")
+                    hexdump(payload[:64])
+                    
+        elif UDP in packet:
+            transport_layer = "UDP"
+            src_port = packet[UDP].sport
+            dst_port = packet[UDP].dport
+            print(f"Protocol: {transport_layer} | Port: {src_port} -> {dst_port}")
+            
+        else:
+            print(f"Protocol: Other IP ({protocol})")
+
+        print("-" * 40)
+
+
 def main():
     args = parse_args()
-
-    # If user requested only analysis of an existing file => run and exit
-    if args.analyze_file:
-        maxp = args.analyze_max if args.analyze_max > 0 else None
-        analyze_pcap(args.analyze_file, max_packets=maxp)
-        sys.exit(0)
-
-    # --- Pre-Capture Setup (Interface and Warnings) ---
-    if not conf.use_pcap:
-        print("Warning: libpcap not available; BPF filters may not work as expected.")
-
-    iface = args.iface
-    if not iface:
-        print("Available interfaces:", get_if_list())
-        iface = input("Choose interface (e.g., eth0, wlan0mon): ").strip()
-        if not iface:
-            print("No interface chosen. Exiting.")
-            sys.exit(1)
-
-    print(f"Interface: {iface}")
-    if args.filter:
-        print(f"Filter: {args.filter!r}")
-    print(f"Output file: {args.outfile}")
-    # ... (other print statements remain the same) ...
-
-    # Stats counters (lightweight)
-    proto_counter = Counter()
-    total_seen = 0
-
-    # --- Signal Handler Setup ---
-    # The 'writer' variable must be accessible to 'stop', so it is defined below
-    writer = None 
     
-    # Stop handler: close writer, optionally analyze
-    # Note: Refactored 'stop' to use the globally-scoped 'writer'
-    def stop(sig, frame):
-        nonlocal writer # Declare nonlocal to modify the outer scope 'writer'
-        print("\n[STOP] Signal received. Closing pcap and exiting...")
-        try:
-            if writer:
-                writer.close()
-        except Exception:
-            pass
-
-        # Analyze the output pcap if requested
-        if args.analyze_after_capture:
-            maxp = args.analyze_max if args.analyze_max > 0 else None
-            analyze_pcap(args.outfile, max_packets=maxp)
-        sys.exit(0)
-
-    signal.signal(signal.SIGINT, stop)
-    signal.signal(signal.SIGTERM, stop)
-
-    # Packet callback (remains the same, but must handle 'writer' as nonlocal)
-    def pkt_cb(pkt):
-        nonlocal total_seen, writer
-        # ... (rest of your existing pkt_cb logic, using nonlocal writer) ...
-        # (Your original logic is complex, but the 'nonlocal writer' fix is key here)
-        
-        try:
-            total_seen += 1
-            # ... (protocol counting/printing logic) ...
-
-            # Write to pcap; USE NONLOCAL WRITER
-            try:
-                if writer: # Check if writer is initialized
-                    writer.write(pkt) 
-            except Exception as e:
-                print("[WRITE ERROR]", e)
-                
-            # ... (periodic stats logic) ...
-        except Exception as cb_e:
-            print("[CALLBACK ERROR]", cb_e)
-
-
-    # --- PcapWriter Context Manager and Sniffing ---
-    sniff_count = args.count if args.count > 0 else 0
+    print(f"Starting sniffer on interface: {args.iface}")
+    if args.filter:
+        print(f"Filter: '{args.filter}'")
+    if args.count > 0:
+        print(f"Limit: {args.count} packets")
+    print("Press Ctrl+C to stop capture...")
     
     try:
-        # PcapWriter is opened using the Context Manager (the critical change)
-        # This guarantees writer.close() is called on exit from this 'with' block.
-        with PcapWriter(args.outfile, append=True, sync=True) as pw:
-            # Assign the Context Manager's writer to the outer scope variable 
-            # so the signal handler and callback can use it.
-            writer = pw 
-            
-            # Run the sniff
-            sniff(iface=iface,
-                  filter=(args.filter if args.filter else None),
-                  prn=pkt_cb,
-                  store=False,
-                  count=sniff_count)
-
+        # Sniff packets indefinitely or until count is reached
+        sniff(iface=args.iface, 
+              filter=(args.filter if args.filter else None), 
+              prn=packet_callback, 
+              store=False, 
+              count=args.count)
     except PermissionError:
-        print("Permission error: run the script with elevated privileges (sudo).")
-        sys.exit(1)
-    except OSError as e:
-        print("OSError from sniff():", e)
-        print("Possible causes: invalid interface, BPF filter issue, or missing libpcap.")
+        print("\nPermission Error: You must run the script with elevated privileges (sudo).")
         sys.exit(1)
     except Exception as e:
-        # Catch any other unexpected error during the sniff process
-        print(f"[CRITICAL ERROR] An unexpected error occurred: {e}")
-        sys.exit(1)
-
-    # Analysis check for count-limited capture
-    if args.analyze_after_capture:
-        maxp = args.analyze_max if args.analyze_max > 0 else None
-        analyze_pcap(args.outfile, max_packets=maxp)
-
-    print("[DONE] Capture finished. Exiting.")
-
+        print(f"\nAn error occurred during sniffing: {e}")
 
 if __name__ == "__main__":
     main()
