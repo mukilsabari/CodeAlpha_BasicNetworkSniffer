@@ -1,0 +1,22 @@
+# Python artifacts
+*.pyc
+__pycache__/
+
+# Compiled objects
+*.o
+*.so
+
+# Network Data (CRITICAL to ignore large files and potentially sensitive captures)
+*.pcap
+*.cap
+/tmp/
+
+# Environment and Data Folders
+/venv/
+.env
+
+# IDE and Operating System generated files
+.DS_Store
+Thumbs.db
+*.bak
+*~
